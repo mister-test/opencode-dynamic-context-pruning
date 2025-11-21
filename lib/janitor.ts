@@ -57,23 +57,26 @@ export class Janitor {
                 if (msg.parts) {
                     for (const part of msg.parts) {
                         if (part.type === "tool" && part.callID) {
-                            toolCallIds.push(part.callID)
+                            // Normalize tool call IDs to lowercase for consistent comparison
+                            const normalizedId = part.callID.toLowerCase()
+                            toolCallIds.push(normalizedId)
 
                             // Try to get parameters from cache first, fall back to part.parameters
-                            const cachedData = this.toolParametersCache.get(part.callID)
+                            // Cache might have either case, so check both
+                            const cachedData = this.toolParametersCache.get(part.callID) || this.toolParametersCache.get(normalizedId)
                             const parameters = cachedData?.parameters || part.parameters
 
                             // Track tool metadata (name and parameters)
-                            toolMetadata.set(part.callID, {
+                            toolMetadata.set(normalizedId, {
                                 tool: part.tool,
                                 parameters: parameters
                             })
 
                             // Debug: log what we're storing
-                            if (part.callID.startsWith('prt_') || part.tool === "read" || part.tool === "list") {
+                            if (normalizedId.startsWith('prt_') || part.tool === "read" || part.tool === "list") {
                                 this.logger.debug("janitor", "Storing tool metadata", {
                                     sessionID,
-                                    callID: part.callID,
+                                    callID: normalizedId,
                                     tool: part.tool,
                                     hasParameters: !!parameters,
                                     hasCached: !!cachedData,
@@ -83,12 +86,12 @@ export class Janitor {
 
                             // Track the output content for size calculation
                             if (part.state?.status === "completed" && part.state.output) {
-                                toolOutputs.set(part.callID, part.state.output)
+                                toolOutputs.set(normalizedId, part.state.output)
                             }
 
                             // Check if this is a batch tool by looking at the tool name
                             if (part.tool === "batch") {
-                                const batchId = part.callID
+                                const batchId = normalizedId
                                 currentBatchId = batchId
                                 batchToolChildren.set(batchId, [])
                                 this.logger.debug("janitor", "Found batch tool", {
@@ -97,18 +100,18 @@ export class Janitor {
                                 })
                             }
                             // If we're inside a batch and this is a prt_ (parallel) tool call, it's a child
-                            else if (currentBatchId && part.callID.startsWith('prt_')) {
+                            else if (currentBatchId && normalizedId.startsWith('prt_')) {
                                 const children = batchToolChildren.get(currentBatchId)!
-                                children.push(part.callID)
+                                children.push(normalizedId)
                                 this.logger.debug("janitor", "Added child to batch tool", {
                                     sessionID,
                                     batchID: currentBatchId,
-                                    childID: part.callID,
+                                    childID: normalizedId,
                                     totalChildren: children.length
                                 })
                             }
                             // If we hit a non-batch, non-prt_ tool, we're out of the batch
-                            else if (currentBatchId && !part.callID.startsWith('prt_')) {
+                            else if (currentBatchId && !normalizedId.startsWith('prt_')) {
                                 this.logger.debug("janitor", "Batch tool ended", {
                                     sessionID,
                                     batchID: currentBatchId,
@@ -143,6 +146,7 @@ export class Janitor {
                 toolCallCount: toolCallIds.length,
                 toolCallIds,
                 alreadyPrunedCount: alreadyPrunedIds.length,
+                alreadyPrunedIds: alreadyPrunedIds.slice(0, 5), // Show first 5 for brevity
                 unprunedCount: unprunedToolCallIds.length
             })
 
@@ -208,6 +212,24 @@ export class Janitor {
                 reason: modelSelection.reason
             })
 
+            // Log comprehensive stats before AI call
+            this.logger.info("janitor", "Preparing AI analysis", {
+                sessionID,
+                totalToolCallsInSession: toolCallIds.length,
+                alreadyPrunedCount: alreadyPrunedIds.length,
+                protectedToolsCount: protectedToolCallIds.length,
+                candidatesForPruning: prunableToolCallIds.length,
+                candidateTools: prunableToolCallIds.map(id => {
+                    const meta = toolMetadata.get(id)
+                    return meta ? `${meta.tool}[${id.substring(0, 12)}...]` : id.substring(0, 12) + '...'
+                }).slice(0, 10), // Show first 10 for brevity
+                batchToolCount: batchToolChildren.size,
+                batchDetails: Array.from(batchToolChildren.entries()).map(([batchId, children]) => ({
+                    batchId: batchId.substring(0, 20) + '...',
+                    childCount: children.length
+                }))
+            })
+
             this.logger.debug("janitor", "Starting shadow inference", { sessionID })
 
             // Analyze which tool calls are obsolete
@@ -221,16 +243,18 @@ export class Janitor {
             })
 
             // Expand batch tool IDs to include their children
+            // Note: IDs are already normalized to lowercase when collected from messages
             const expandedPrunedIds = new Set<string>()
             for (const prunedId of result.object.pruned_tool_call_ids) {
-                expandedPrunedIds.add(prunedId)
+                const normalizedId = prunedId.toLowerCase()
+                expandedPrunedIds.add(normalizedId)
 
                 // If this is a batch tool, add all its children
-                const children = batchToolChildren.get(prunedId)
+                const children = batchToolChildren.get(normalizedId)
                 if (children) {
                     this.logger.debug("janitor", "Expanding batch tool to include children", {
                         sessionID,
-                        batchID: prunedId,
+                        batchID: normalizedId,
                         childCount: children.length,
                         childIDs: children
                     })
@@ -238,6 +262,10 @@ export class Janitor {
                 }
             }
 
+            // Calculate which IDs are actually NEW (not already pruned)
+            const newlyPrunedIds = Array.from(expandedPrunedIds).filter(id => !alreadyPrunedIds.includes(id))
+            
+            // finalPrunedIds includes everything (new + already pruned) for logging
             const finalPrunedIds = Array.from(expandedPrunedIds)
 
             this.logger.info("janitor", "Analysis complete", {
@@ -248,9 +276,19 @@ export class Janitor {
                 reasoning: result.object.reasoning
             })
 
-            // Calculate approximate size saved from newly pruned tool outputs (using expanded IDs)
+            this.logger.debug("janitor", "Pruning ID details", {
+                sessionID,
+                alreadyPrunedCount: alreadyPrunedIds.length,
+                alreadyPrunedIds: alreadyPrunedIds,
+                finalPrunedCount: finalPrunedIds.length,
+                finalPrunedIds: finalPrunedIds,
+                newlyPrunedCount: newlyPrunedIds.length,
+                newlyPrunedIds: newlyPrunedIds
+            })
+
+            // Calculate approximate size saved from newly pruned tool outputs
             let totalCharsSaved = 0
-            for (const prunedId of finalPrunedIds) {
+            for (const prunedId of newlyPrunedIds) {
                 const output = toolOutputs.get(prunedId)
                 if (output) {
                     totalCharsSaved += output.length
@@ -266,11 +304,11 @@ export class Janitor {
             this.logger.debug("janitor", "Updated state manager", {
                 sessionID,
                 totalPrunedCount: allPrunedIds.length,
-                newlyPrunedCount: finalPrunedIds.length
+                newlyPrunedCount: newlyPrunedIds.length
             })
 
-            // Show toast notification if we pruned anything
-            if (finalPrunedIds.length > 0) {
+            // Show toast notification if we pruned anything NEW
+            if (newlyPrunedIds.length > 0) {
                 try {
                     // Helper function to shorten paths for display
                     const shortenPath = (path: string): string => {
@@ -298,7 +336,7 @@ export class Janitor {
                     // Build a summary of pruned tools by grouping them
                     const toolsSummary = new Map<string, string[]>() // tool name -> [parameters]
 
-                    for (const prunedId of finalPrunedIds) {
+                    for (const prunedId of newlyPrunedIds) {
                         const metadata = toolMetadata.get(prunedId)
                         if (metadata) {
                             const toolName = metadata.tool
@@ -356,8 +394,8 @@ export class Janitor {
                     }
 
                     // Format the message with tool details
-                    const toolText = finalPrunedIds.length === 1 ? 'tool' : 'tools';
-                    const title = `Pruned ${finalPrunedIds.length} ${toolText} from context`;
+                    const toolText = newlyPrunedIds.length === 1 ? 'tool' : 'tools';
+                    const title = `Pruned ${newlyPrunedIds.length} ${toolText} from context`;
                     let message = `~${estimatedTokensSaved.toLocaleString()} tokens saved\n`
 
                     for (const [toolName, params] of toolsSummary.entries()) {
@@ -368,7 +406,7 @@ export class Janitor {
                             }
                         } else {
                             // For tools with no specific params (like batch), just show the tool name and count
-                            const count = finalPrunedIds.filter(id => {
+                            const count = newlyPrunedIds.filter(id => {
                                 const m = toolMetadata.get(id)
                                 return m && m.tool === toolName
                             }).length
@@ -389,7 +427,7 @@ export class Janitor {
 
                     this.logger.info("janitor", "Toast notification shown", {
                         sessionID,
-                        prunedCount: finalPrunedIds.length,
+                        prunedCount: newlyPrunedIds.length,
                         estimatedTokensSaved,
                         totalCharsSaved,
                         toolsSummary: Array.from(toolsSummary.entries())

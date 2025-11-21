@@ -41,6 +41,11 @@ async function isSubagentSession(
 const plugin: Plugin = (async (ctx) => {
     const config = getConfig()
 
+    // Exit early if plugin is disabled
+    if (!config.enabled) {
+        return {}
+    }
+
     // Suppress AI SDK warnings about responseFormat (harmless for our use case)
     if (typeof globalThis !== 'undefined') {
         (globalThis as any).AI_SDK_LOG_WARNINGS = false
@@ -84,7 +89,8 @@ const plugin: Plugin = (async (ctx) => {
         }
     }
 
-    // Global fetch wrapper that both caches tool parameters AND performs pruning
+    // Global fetch wrapper that caches tool parameters for janitor metadata
+    // Note: Pruning is handled per-session in the chat.params hook, not here
     // This works because all providers ultimately call globalThis.fetch
     const originalGlobalFetch = globalThis.fetch
     globalThis.fetch = async (input: any, init?: any) => {
@@ -95,54 +101,13 @@ const plugin: Plugin = (async (ctx) => {
                     // Cache tool parameters for janitor metadata
                     cacheToolParameters(body.messages, "global-fetch")
                     
-                    // Perform pruning: collect all pruned IDs across all non-subagent sessions
+                    // Log tool messages for debugging
                     const toolMessages = body.messages.filter((m: any) => m.role === 'tool')
                     if (toolMessages.length > 0) {
                         logger.debug("global-fetch", "Found tool messages in request", {
                             toolMessageCount: toolMessages.length,
                             toolCallIds: toolMessages.map((m: any) => m.tool_call_id).slice(0, 5)
                         })
-
-                        // Collect all pruned IDs across all sessions, excluding subagent sessions
-                        const allSessions = await ctx.client.session.list()
-                        const allPrunedIds = new Set<string>()
-
-                        if (allSessions.data) {
-                            for (const session of allSessions.data) {
-                                // Skip subagent sessions
-                                if (session.parentID) {
-                                    continue
-                                }
-                                
-                                const prunedIds = await stateManager.get(session.id)
-                                prunedIds.forEach(id => allPrunedIds.add(id))
-                            }
-                        }
-
-                        if (allPrunedIds.size > 0) {
-                            let replacedCount = 0
-                            body.messages = body.messages.map((m: any) => {
-                                if (m.role === 'tool' && allPrunedIds.has(m.tool_call_id)) {
-                                    replacedCount++
-                                    return {
-                                        ...m,
-                                        content: '[Output removed to save context - information superseded or no longer needed]'
-                                    }
-                                }
-                                return m
-                            })
-
-                            if (replacedCount > 0) {
-                                logger.info("global-fetch", "✂️ Replaced pruned tool messages", {
-                                    totalPrunedIds: allPrunedIds.size,
-                                    replacedCount: replacedCount,
-                                    totalMessages: body.messages.length
-                                })
-
-                                // Update the request body with modified messages
-                                init.body = JSON.stringify(body)
-                            }
-                        }
                     }
                 }
             } catch (e) {
@@ -154,8 +119,10 @@ const plugin: Plugin = (async (ctx) => {
     }
 
     logger.info("plugin", "Dynamic Context Pruning plugin initialized", {
+        enabled: config.enabled,
         debug: config.debug,
         protectedTools: config.protectedTools,
+        configFile: join(homedir(), ".config", "opencode", "dcp.jsonc"),
         logDirectory: join(homedir(), ".config", "opencode", "logs", "dcp"),
         globalFetchWrapped: true
     })

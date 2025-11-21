@@ -25,7 +25,36 @@ Add to your OpenCode configuration:
 
 Restart OpenCode. The plugin will automatically start optimizing your sessions.
 
-## Updating
+## Configuration
+
+The plugin creates a configuration file at `~/.config/opencode/dcp.jsonc` on first run. You can edit this file to customize the plugin's behavior.
+
+```jsonc
+{
+  // Enable or disable the Dynamic Context Pruning plugin
+  "enabled": true,
+
+  // Enable debug logging to ~/.config/opencode/logs/dcp/YYYY-MM-DD.log
+  "debug": false,
+
+  // List of tools that should never be pruned from context
+  // The 'task' tool is protected by default to preserve subagent coordination
+  "protectedTools": ["task"]
+}
+```
+
+### Configuration Options
+
+- **`enabled`** (boolean, default: `true`)  
+  Enable or disable the plugin without removing it from your OpenCode configuration.
+
+- **`debug`** (boolean, default: `false`)  
+  Enable detailed debug logging. Logs are written to `~/.config/opencode/logs/dcp/YYYY-MM-DD.log`.
+
+- **`protectedTools`** (string[], default: `["task"]`)  
+  List of tool names that should never be pruned from context. The `task` tool is protected by default to ensure subagent coordination works correctly.
+
+After modifying the configuration, restart OpenCode for changes to take effect.
 
 OpenCode automatically installs plugins from npm to `~/.cache/opencode/node_modules/`. To force an update to the latest version:
 
@@ -59,27 +88,6 @@ If you want to ensure a specific version is always used, you can pin it in your 
     "@tarquinen/opencode-dcp@0.1.11"
   ]
 }
-```
-
-## Debug Logging
-
-Enable debug logging by setting the `OPENCODE_DCP_DEBUG` environment variable:
-
-```bash
-# For one session
-OPENCODE_DCP_DEBUG=1 opencode
-
-# For all sessions
-export OPENCODE_DCP_DEBUG=1
-opencode
-```
-
-Logs are written to `~/.config/opencode/logs/dcp/YYYY-MM-DD.log`.
-
-Watch logs in real-time:
-
-```bash
-tail -f ~/.config/opencode/logs/dcp/$(date +%Y-%m-%d).log
 ```
 
 ## License
