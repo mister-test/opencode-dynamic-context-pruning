@@ -7,6 +7,7 @@ import {
     extractParameterKey,
     createSyntheticTextPart,
     createSyntheticToolPart,
+    createSyntheticAssistantMessage,
     isIgnoredUserMessage,
 } from "./utils"
 import { getFilePathsFromParameters, isProtected } from "../protected-file-patterns"
@@ -228,16 +229,19 @@ export const insertPruneToolContext = (
         return
     }
 
-    // When following a user message, append a synthetic text part since models like Claude
-    // expect assistant turns to start with reasoning parts which cannot be easily faked.
-    // For all other cases, append a synthetic tool part to the last message which works
-    // across all models without disrupting their behavior.
+    // When following a user message, append a synthetic text part to the user message.
+    // When following an assistant message, insert a full synthetic assistant message
+    // with a reasoning part (Claude expects assistant turns to start with reasoning).
     if (lastNonIgnoredMessage.info.role === "user") {
         const textPart = createSyntheticTextPart(lastNonIgnoredMessage, combinedContent)
         lastNonIgnoredMessage.parts.push(textPart)
     } else {
-        const modelID = userInfo.model?.modelID || ""
-        const toolPart = createSyntheticToolPart(lastNonIgnoredMessage, combinedContent, modelID)
-        lastNonIgnoredMessage.parts.push(toolPart)
+        const assistantMessage = createSyntheticAssistantMessage(
+            lastNonIgnoredMessage,
+            combinedContent,
+            "", // Empty reasoning text - testing if this works with Claude
+        )
+        const insertIndex = messages.indexOf(lastNonIgnoredMessage) + 1
+        messages.splice(insertIndex, 0, assistantMessage)
     }
 }

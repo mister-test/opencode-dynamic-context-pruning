@@ -58,6 +58,73 @@ export const createSyntheticTextPart = (baseMessage: WithParts, content: string)
     }
 }
 
+export const createSyntheticReasoningPart = (
+    sessionID: string,
+    messageID: string,
+    text: string,
+) => {
+    const partId = generateUniqueId("prt")
+    const now = Date.now()
+
+    return {
+        id: partId,
+        sessionID,
+        messageID,
+        type: "reasoning" as const,
+        text,
+        time: { start: now, end: now },
+    }
+}
+
+export const createSyntheticAssistantMessage = (
+    baseMessage: WithParts,
+    textContent: string,
+    reasoningText: string = "",
+): WithParts => {
+    const userInfo = baseMessage.info as UserMessage
+    const now = Date.now()
+    const messageId = generateUniqueId("msg")
+
+    const parts: any[] = []
+
+    // Add reasoning part first (Claude expects reasoning before text)
+    const reasoningPart = createSyntheticReasoningPart(userInfo.sessionID, messageId, reasoningText)
+    parts.push(reasoningPart)
+
+    // Add text part with actual content
+    const textPartId = generateUniqueId("prt")
+    parts.push({
+        id: textPartId,
+        sessionID: userInfo.sessionID,
+        messageID: messageId,
+        type: "text" as const,
+        text: textContent,
+    })
+
+    return {
+        info: {
+            id: messageId,
+            sessionID: userInfo.sessionID,
+            role: "assistant" as const,
+            time: { created: now, completed: now },
+            parentID: userInfo.id,
+            modelID: userInfo.model?.modelID || "",
+            providerID: userInfo.model?.providerID || "",
+            mode: "",
+            agent: userInfo.agent,
+            path: { cwd: "", root: "" },
+            cost: 0,
+            tokens: {
+                input: 0,
+                output: 0,
+                reasoning: 0,
+                cache: { read: 0, write: 0 },
+            },
+        },
+        parts,
+    }
+}
+
 export const createSyntheticToolPart = (
     baseMessage: WithParts,
     content: string,
