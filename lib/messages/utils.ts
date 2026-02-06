@@ -1,10 +1,8 @@
 import { ulid } from "ulid"
 import { isMessageCompacted } from "../shared-utils"
 import { Logger } from "../logger"
+import type { AssistantMessage, UserMessage } from "@opencode-ai/sdk/v2"
 import type { SessionState, WithParts } from "../state"
-import type { UserMessage } from "@opencode-ai/sdk/v2"
-
-// ── Constants & Private Helpers ──────────────────────────────────────────────
 
 export const COMPRESS_SUMMARY_PREFIX = "[Compressed conversation block]\n\n"
 
@@ -15,32 +13,42 @@ const isGeminiModel = (modelID: string): boolean => {
     return lowerModelID.includes("gemini")
 }
 
-export const isClaudeModel = (modelID: string, providerID: string): boolean => {
-    const lowerModelID = modelID.toLowerCase()
-    const lowerProviderID = providerID.toLowerCase()
-    return lowerModelID.includes("claude") && lowerProviderID.includes("anthropic")
+export const isAnthropic = (state: SessionState, msg: WithParts): boolean => {
+    const info = msg.info as AssistantMessage
+    const modelID = info.modelID || ""
+    const providerID = info.providerID || ""
+    return (
+        state.model.interleaved &&
+        modelID.toLowerCase().includes("claude") &&
+        providerID.toLowerCase().includes("anthropic") &&
+        hasReasoningParts(msg)
+    )
 }
 
-// ── Synthetic Part Factories ─────────────────────────────────────────────────
+export const isAntigravity = (state: SessionState, msg: WithParts): boolean => {
+    const info = msg.info as AssistantMessage
+    const modelID = info.modelID || ""
+    const providerID = info.providerID || ""
+    const lowerProviderID = providerID.toLowerCase()
+    return (
+        state.model.interleaved &&
+        (lowerProviderID === "llm-proxy" || lowerProviderID === "google") &&
+        modelID.toLowerCase().includes("claude")
+    )
+}
 
-export const createSyntheticTextPart = (baseMessage: WithParts, content: string) => {
-    const userInfo = baseMessage.info as UserMessage
-    const partId = generateUniqueId("prt")
-
+export const createTextPart = (sessionID: string, messageID: string, text: string) => {
     return {
-        id: partId,
-        sessionID: userInfo.sessionID,
-        messageID: userInfo.id,
+        id: generateUniqueId("prt"),
+        sessionID,
+        messageID,
         type: "text" as const,
-        text: content,
+        text,
+        synthetic: true,
     }
 }
 
-export const createSyntheticReasoningPart = (
-    sessionID: string,
-    messageID: string,
-    text: string,
-) => {
+export const createReasoningPart = (sessionID: string, messageID: string, text: string) => {
     const partId = generateUniqueId("prt")
     const now = Date.now()
 
@@ -54,11 +62,7 @@ export const createSyntheticReasoningPart = (
     }
 }
 
-export const createSyntheticToolPart = (
-    baseMessage: WithParts,
-    content: string,
-    modelID: string,
-) => {
+export const createToolPart = (baseMessage: WithParts, content: string, modelID: string) => {
     const userInfo = baseMessage.info as UserMessage
     const now = Date.now()
 
@@ -88,9 +92,7 @@ export const createSyntheticToolPart = (
     }
 }
 
-// ── Synthetic Message Factories ──────────────────────────────────────────────
-
-export const createSyntheticUserMessage = (
+export const createUserMessage = (
     baseMessage: WithParts,
     content: string,
     variant?: string,
@@ -122,15 +124,20 @@ export const createSyntheticUserMessage = (
     }
 }
 
-export const createSyntheticAssistantMessage = (
+export const createAssistantMessage = (
     baseMessage: WithParts,
     reasoningText: string,
+    textContent?: string,
 ): WithParts => {
     const userInfo = baseMessage.info as UserMessage
     const now = Date.now()
     const messageId = generateUniqueId("msg")
 
-    const reasoningPart = createSyntheticReasoningPart(userInfo.sessionID, messageId, reasoningText)
+    const parts: any[] = [createReasoningPart(userInfo.sessionID, messageId, reasoningText)]
+
+    if (textContent) {
+        parts.push(createTextPart(userInfo.sessionID, messageId, textContent))
+    }
 
     return {
         info: {
@@ -152,11 +159,9 @@ export const createSyntheticAssistantMessage = (
                 cache: { read: 0, write: 0 },
             },
         },
-        parts: [reasoningPart],
+        parts,
     }
 }
-
-// ── Message Utilities ────────────────────────────────────────────────────────
 
 export const hasReasoningParts = (msg: WithParts): boolean => {
     return msg.parts.some((part) => part.type === "reasoning")
@@ -204,11 +209,6 @@ export function buildToolIdList(
     return toolIds
 }
 
-// ── Tool Metadata ────────────────────────────────────────────────────────────
-
-/**
- * Extracts a human-readable key from tool metadata for display purposes.
- */
 export const extractParameterKey = (tool: string, parameters: any): string => {
     if (!parameters) return ""
 

@@ -35,6 +35,7 @@ export interface ModelInfo {
     id: string | undefined
     provider: string | undefined
     contextLimit: number | undefined
+    interleaved: boolean
 }
 
 export interface SessionState {

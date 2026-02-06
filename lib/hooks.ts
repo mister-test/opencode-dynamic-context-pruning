@@ -24,21 +24,12 @@ export function createSystemPromptHandler(
     logger: Logger,
     config: PluginConfig,
 ) {
-    return async (
-        input: {
-            sessionID?: string
-            model: {
-                id: string
-                providerID: string
-                limit: { context: number }
-            }
-        },
-        output: { system: string[] },
-    ) => {
+    return async (input: any, output: { system: string[] }) => {
         state.model = {
             id: input.model?.id,
             provider: input.model?.providerID,
             contextLimit: input.model?.limit?.context,
+            interleaved: !!input.model?.capabilities?.interleaved,
         }
         logger.debug("Cached model info", state.model)
 

@@ -67,6 +67,7 @@ export function createSessionState(): SessionState {
             id: undefined,
             provider: undefined,
             contextLimit: undefined,
+            interleaved: false,
         },
     }
 }
@@ -94,6 +95,7 @@ export function resetSessionState(state: SessionState): void {
         id: undefined,
         provider: undefined,
         contextLimit: undefined,
+        interleaved: false,
     }
 }
 

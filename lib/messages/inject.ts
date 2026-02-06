@@ -5,12 +5,12 @@ import type { AssistantMessage, UserMessage } from "@opencode-ai/sdk/v2"
 import { renderNudge, renderCompressNudge } from "../prompts"
 import {
     extractParameterKey,
-    createSyntheticTextPart,
-    createSyntheticToolPart,
-    createSyntheticAssistantMessage,
+    createTextPart,
+    createToolPart,
+    createAssistantMessage,
     isIgnoredUserMessage,
-    hasReasoningParts,
-    isClaudeModel,
+    isAnthropic,
+    isAntigravity,
 } from "./utils"
 import { getFilePathsFromParameters, isProtected } from "../protected-file-patterns"
 import { getLastUserMessage, isMessageCompacted } from "../shared-utils"
@@ -231,24 +231,30 @@ export const insertPruneToolContext = (
         return
     }
 
-    injectContent(messages, lastNonIgnoredMessage, combinedContent)
+    injectContent(state, messages, lastNonIgnoredMessage, combinedContent)
 }
 
-const injectContent = (messages: WithParts[], target: WithParts, content: string): void => {
+const injectContent = (
+    state: SessionState,
+    messages: WithParts[],
+    target: WithParts,
+    content: string,
+): void => {
     if (target.info.role === "user") {
-        const textPart = createSyntheticTextPart(target, content)
+        const textPart = createTextPart(target.info.sessionID, target.info.id, content)
         target.parts.push(textPart)
     } else {
         const assistantInfo = target.info as AssistantMessage
-        if (
-            hasReasoningParts(target) &&
-            isClaudeModel(assistantInfo.modelID, assistantInfo.providerID)
-        ) {
-            const assistantMessage = createSyntheticAssistantMessage(target, content)
+        if (isAntigravity(state, target)) {
+            const assistantMessage = createAssistantMessage(target, "", content)
+            const insertIndex = messages.indexOf(target) + 1
+            messages.splice(insertIndex, 0, assistantMessage)
+        } else if (isAnthropic(state, target)) {
+            const assistantMessage = createAssistantMessage(target, content)
             const insertIndex = messages.indexOf(target) + 1
             messages.splice(insertIndex, 0, assistantMessage)
         } else {
-            const toolPart = createSyntheticToolPart(target, content, assistantInfo.modelID)
+            const toolPart = createToolPart(target, content, assistantInfo.modelID || "")
             target.parts.push(toolPart)
         }
     }
